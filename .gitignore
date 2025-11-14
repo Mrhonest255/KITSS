@@ -1,0 +1,12 @@
+
+# dependencies & build output
+node_modules/
+dist/
+
+# env/config secrets
+.env
+.env.*
+
+# misc
+.DS_Store
+Thumbs.db

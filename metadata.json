@@ -1,0 +1,5 @@
+{
+  "name": "BookForge AI",
+  "description": "An AI-powered application to generate complete books from a simple prompt. It creates an outline, writes chapters, generates matching images, and compiles everything into a downloadable PDF.",
+  "requestFramePermissions": []
+}
