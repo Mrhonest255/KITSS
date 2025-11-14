@@ -6,12 +6,14 @@ import { BookIcon } from './icons/BookIcon';
 interface BookConfigFormProps {
     onGenerate: (config: BookConfig) => void;
     isGenerating: boolean;
+    quotaRemaining: number;
+    canGenerate: boolean;
 }
 
 const genres: Genre[] = ["Educational", "Fiction", "Non-Fiction", "Guide", "Story", "Other"];
 const languages = ["English", "Swahili", "Spanish", "French"];
 
-const BookConfigForm: React.FC<BookConfigFormProps> = ({ onGenerate, isGenerating }) => {
+const BookConfigForm: React.FC<BookConfigFormProps> = ({ onGenerate, isGenerating, quotaRemaining, canGenerate }) => {
     const [config, setConfig] = useState<BookConfig>({
         title: 'The Wonders of Child Safety',
         topic: 'child safety for parents',
@@ -21,6 +23,7 @@ const BookConfigForm: React.FC<BookConfigFormProps> = ({ onGenerate, isGeneratin
         tone: 'Friendly, reassuring, and informative',
         chaptersCount: 5,
         wordsPerChapter: 500,
+        dedication: '',
     });
     const [errors, setErrors] = useState<Partial<Record<keyof BookConfig, string>>>({});
 
@@ -73,6 +76,7 @@ const BookConfigForm: React.FC<BookConfigFormProps> = ({ onGenerate, isGeneratin
                 <p className="text-slate-400 text-sm max-w-2xl">
                     Describe the story you want to tell and BookForge AI will craft a clean outline, generate polished chapters, and prep everything for PDF in one pass.
                 </p>
+                <p className="text-xs text-emerald-300">{quotaRemaining} generation{quotaRemaining === 1 ? '' : 's'} left today.</p>
             </div>
 
             <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
@@ -87,21 +91,25 @@ const BookConfigForm: React.FC<BookConfigFormProps> = ({ onGenerate, isGeneratin
                 <InputField label="Tone" name="tone" value={config.tone} onChange={handleChange} />
                 <InputField label="Number of Chapters" name="chaptersCount" type="number" min={3} max={25} value={config.chaptersCount} onChange={handleChange} error={errors.chaptersCount} />
                 <InputField label="Words per Chapter" name="wordsPerChapter" type="number" min={200} max={5000} step={100} value={config.wordsPerChapter} onChange={handleChange} error={errors.wordsPerChapter} />
+                <InputField label="Created For (optional)" name="dedication" value={config.dedication || ''} onChange={handleChange} />
             </div>
 
             <div className="flex flex-wrap items-center gap-4 rounded-2xl border border-white/5 bg-white/5 px-4 py-3 text-sm text-slate-200">
                 <BookIcon className="h-5 w-5 text-indigo-300" />
-                <p>Your manuscript defaults to a text-first layout. Upload personal imagery in the "Optional media" panel to append a curated gallery to the PDF.</p>
+                <p>Your manuscript defaults to a text-first layout. Upload personal imagery in the "Optional media" panel and choose a PDF style preset during export for a polished gallery experience.</p>
             </div>
 
             <button
                 type="submit"
-                disabled={isGenerating}
+                disabled={isGenerating || !canGenerate}
                 className="w-full flex items-center justify-center gap-3 rounded-2xl bg-gradient-to-r from-indigo-500 via-indigo-400 to-cyan-400 py-4 text-lg font-semibold text-white transition hover:shadow-[0_10px_40px_rgba(99,102,241,.4)] disabled:cursor-not-allowed disabled:from-slate-700 disabled:to-slate-600"
             >
                 <BookIcon className={`h-5 w-5 ${isGenerating ? 'animate-pulse' : ''}`} />
                 {isGenerating ? 'Forging your book...' : 'Generate Book'}
             </button>
+            {!canGenerate && (
+                <p className="text-center text-xs text-amber-300">Daily free quota used. Share BookForge to unlock another run.</p>
+            )}
         </form>
     );
 };

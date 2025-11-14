@@ -137,36 +137,44 @@ async function generateOutlineWithGemini(config: BookConfig): Promise<BookOutlin
 
 async function generateChaptersWithGemini(config: BookConfig, outline: BookOutline): Promise<ChapterContent[]> {
     const ai = new GoogleGenAI({ apiKey });
-    const chapterContents: ChapterContent[] = [];
+    const results: ChapterContent[] = [];
+    const queue = [...outline.chapters];
+    const concurrency = Math.min(3, queue.length);
 
-    for (const chapterOutline of outline.chapters) {
-        const prompt = `You are a book author. Write the full content for a single chapter of a book.
-            Book Details:
-            - Title: "${config.title}", Topic: "${config.topic}", Genre: "${config.genre}", Audience: "${config.targetAudience}", Language: "${config.language}", Tone: "${config.tone}"
-            Chapter Details:
-            - Chapter Number: ${chapterOutline.index}, Title: "${chapterOutline.title}", Description: "${chapterOutline.shortDescription}"
-            Instructions:
-            1. Write the full chapter text, approximately ${config.wordsPerChapter} words long.
-            2. Ensure the content is safe, well-structured, and uses markdown headings where appropriate.
-        `;
-        
+    const worker = async () => {
+        while (queue.length > 0) {
+            const chapterOutline = queue.shift();
+            if (!chapterOutline) break;
+            const prompt = `You are a book author. Write the full content for a single chapter of a book.
+                Book Details:
+                - Title: "${config.title}", Topic: "${config.topic}", Genre: "${config.genre}", Audience: "${config.targetAudience}", Language: "${config.language}", Tone: "${config.tone}"
+                Chapter Details:
+                - Chapter Number: ${chapterOutline.index}, Title: "${chapterOutline.title}", Description: "${chapterOutline.shortDescription}"
+                Instructions:
+                1. Write the full chapter text, approximately ${config.wordsPerChapter} words long.
+                2. Ensure the content is safe, well-structured, and uses markdown headings where appropriate.
+            `;
+
             const response = await withRetry(() => ai.models.generateContent({
-            model: 'gemini-2.5-pro',
-            contents: prompt,
-            config: {
-                responseMimeType: "application/json",
-                responseSchema: {
-                     type: Type.OBJECT,
-                     properties: { text: { type: Type.STRING } },
-                     required: ["text"]
+                model: 'gemini-2.5-pro',
+                contents: prompt,
+                config: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                         type: Type.OBJECT,
+                         properties: { text: { type: Type.STRING } },
+                         required: ["text"]
+                    }
                 }
-            }
             }));
-        
-        const content = JSON.parse(response.text.trim()) as Pick<ChapterContent, 'text'>;
-        chapterContents.push({ ...content, index: chapterOutline.index, title: chapterOutline.title });
-    }
-    return chapterContents;
+
+            const content = JSON.parse(response.text.trim()) as Pick<ChapterContent, 'text'>;
+            results.push({ ...content, index: chapterOutline.index, title: chapterOutline.title });
+        }
+    };
+
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
+    return results.sort((a, b) => a.index - b.index);
 }
 
 

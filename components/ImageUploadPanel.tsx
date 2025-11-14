@@ -10,6 +10,8 @@ interface ImageUploadPanelProps {
     onToggleInclude: (id: string) => void;
     onRemove: (id: string) => void;
     onClearAll: () => void;
+    onCaptionChange: (id: string, caption: string) => void;
+    onAddByUrl: (url: string) => void;
 }
 
 const ImageUploadPanel: React.FC<ImageUploadPanelProps> = ({
@@ -19,8 +21,11 @@ const ImageUploadPanel: React.FC<ImageUploadPanelProps> = ({
     onToggleInclude,
     onRemove,
     onClearAll,
+    onCaptionChange,
+    onAddByUrl,
 }) => {
     const inputRef = useRef<HTMLInputElement | null>(null);
+    const urlInputRef = useRef<HTMLInputElement | null>(null);
 
     const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
         if (event.target.files?.length) {
@@ -36,7 +41,7 @@ const ImageUploadPanel: React.FC<ImageUploadPanelProps> = ({
                     <p className="text-xs uppercase tracking-[0.35em] text-slate-500">Optional media</p>
                     <h3 className="mt-1 text-2xl font-semibold text-white">Upload Custom Images</h3>
                     <p className="mt-1 text-sm text-slate-400 max-w-lg">
-                        Drop up to 12 PNG, JPG, or WEBP files. Toggle each item to decide whether it should appear inside the PDF gallery page.
+                        Drop up to 12 PNG, JPG, or WEBP files. Toggle each item to decide whether it should appear inside the PDF gallery page, then fine-tune placements inside the "Customize & Download" studio.
                     </p>
                     {statusMessage && (
                         <p className="mt-2 text-xs text-amber-300">{statusMessage}</p>
@@ -70,6 +75,31 @@ const ImageUploadPanel: React.FC<ImageUploadPanelProps> = ({
                 onChange={handleFileChange}
                 className="hidden"
             />
+
+            <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-4">
+                <p className="text-sm font-semibold text-white">Add via link</p>
+                <p className="text-xs text-slate-400">Paste an image URL (PNG, JPG, or WEBP). We'll pull it into your gallery.</p>
+                <div className="mt-3 flex flex-col gap-3 sm:flex-row">
+                    <input
+                        ref={urlInputRef}
+                        type="url"
+                        placeholder="https://example.com/cover.png"
+                        className="flex-1 rounded-2xl border border-white/10 bg-black/30 px-4 py-2 text-sm text-white placeholder-slate-500 focus:border-white/40 focus:outline-none"
+                    />
+                    <button
+                        type="button"
+                        onClick={() => {
+                            const value = urlInputRef.current?.value?.trim();
+                            if (!value) return;
+                            onAddByUrl(value);
+                            if (urlInputRef.current) urlInputRef.current.value = '';
+                        }}
+                        className="rounded-2xl bg-gradient-to-r from-indigo-500 to-cyan-400 px-4 py-2 text-sm font-semibold text-white"
+                    >
+                        Grab Image
+                    </button>
+                </div>
+            </div>
 
             {images.length === 0 ? (
                 <div className="mt-6 flex flex-col items-center justify-center rounded-2xl border border-dashed border-white/10 bg-white/5 py-10 text-center text-slate-400">
@@ -107,6 +137,16 @@ const ImageUploadPanel: React.FC<ImageUploadPanelProps> = ({
                                         className="h-4 w-4 rounded border border-white/20 bg-slate-900 text-indigo-500 focus:ring-indigo-500"
                                     />
                                     Include in PDF gallery
+                                </label>
+                                <label className="mt-3 text-xs text-slate-300">
+                                    Caption
+                                    <input
+                                        type="text"
+                                        value={asset.caption ?? ''}
+                                        onChange={e => onCaptionChange(asset.id, e.target.value)}
+                                        placeholder="Describe this image"
+                                        className="mt-1 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-white/30 focus:outline-none"
+                                    />
                                 </label>
                             </div>
                         </article>

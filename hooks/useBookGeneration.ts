@@ -48,6 +48,7 @@ export const useBookGeneration = () => {
                 book: { config, outline, chapters },
                 warnings,
             });
+            return true;
 
         } catch (e) {
             const error = e instanceof Error ? e.message : 'An unknown error occurred.';
@@ -57,6 +58,7 @@ export const useBookGeneration = () => {
                 message: 'An error occurred.',
                 warnings: [],
             });
+            return false;
         }
     }, []);
 
@@ -64,5 +66,21 @@ export const useBookGeneration = () => {
         setState(initialState);
     }, []);
 
-    return { state, generateBook, reset };
+    const updateChapterText = useCallback((chapterIndex: number, text: string) => {
+        setState(prevState => {
+            if (!prevState.book) return prevState;
+            const updatedChapters = prevState.book.chapters.map(chapter =>
+                chapter.index === chapterIndex ? { ...chapter, text } : chapter
+            );
+            return {
+                ...prevState,
+                book: {
+                    ...prevState.book,
+                    chapters: updatedChapters,
+                },
+            };
+        });
+    }, []);
+
+    return { state, generateBook, reset, updateChapterText };
 };

@@ -10,6 +10,7 @@ export interface BookConfig {
   tone: string;
   chaptersCount: number;
   wordsPerChapter: number;
+  dedication?: string;
 }
 
 export interface ChapterOutline {
@@ -46,6 +47,13 @@ export interface GenerationState {
   warnings?: string[];
 }
 
+export type ChapterImageAnchor = 'start' | 'middle' | 'end';
+
+export type ImagePlacement =
+  | { type: 'gallery' }
+  | { type: 'cover'; coverSlot: 'background' | 'badge' }
+  | { type: 'chapter'; chapterIndex: number; anchor?: ChapterImageAnchor };
+
 export interface UserImageAsset {
   id: string;
   name: string;
@@ -53,6 +61,10 @@ export interface UserImageAsset {
   size: number;
   type: string;
   include: boolean;
+  caption?: string;
+  source?: 'upload' | 'url';
+  createdAt: number;
+  placement?: ImagePlacement;
 }
 
 export interface ServiceResult<T> {
@@ -80,6 +92,8 @@ export interface PdfFontConfig {
     bold?: boolean;
 }
 
+export type PdfStylePreset = 'aurora' | 'editorial' | 'midnight';
+
 export interface PdfConfig {
     pageSize: PageSize;
     margins: PdfMargins;
@@ -90,8 +104,10 @@ export interface PdfConfig {
         heading: PdfFontConfig;
         body: PdfFontConfig;
     };
+  stylePreset?: PdfStylePreset;
 }
 
 export interface PdfBuildOptions {
   images?: UserImageAsset[];
+  enableDropCaps?: boolean;
 }

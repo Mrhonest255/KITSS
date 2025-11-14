@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react';
-import { BookConfig, UserImageAsset } from './types/book';
+import { BookConfig, ChapterContent, UserImageAsset, ImagePlacement } from './types/book';
 import { useBookGeneration } from './hooks/useBookGeneration';
 import BookConfigForm from './components/BookConfigForm';
 import GenerationProgress from './components/GenerationProgress';
@@ -12,14 +12,22 @@ import { LogoIcon } from './components/icons/LogoIcon';
 import ApiStatusIndicator from './components/ApiStatusIndicator';
 import ApiInfoPanel from './components/ApiInfoPanel';
 import ImageUploadPanel from './components/ImageUploadPanel';
+import ExperienceHighlights from './components/ExperienceHighlights';
+import QuotaBanner from './components/QuotaBanner';
+import CreativeInterlude from './components/CreativeInterlude';
+import ChapterEditModal from './components/ChapterEditModal';
 import { apiKey } from './config/apiKey';
+import { useGenerationQuota } from './hooks/useGenerationQuota';
 
 const App: React.FC = () => {
-    const { state, generateBook, reset } = useBookGeneration();
+    const { state, generateBook, reset, updateChapterText } = useBookGeneration();
+    const quota = useGenerationQuota();
     const [selectedChapterIndex, setSelectedChapterIndex] = useState<number | null>(null);
     const [showApiInfo, setShowApiInfo] = useState(!apiKey);
     const [userImages, setUserImages] = useState<UserImageAsset[]>([]);
     const [imageStatus, setImageStatus] = useState<string | null>(null);
+    const [quotaNotice, setQuotaNotice] = useState<string | null>(null);
+    const [chapterBeingEdited, setChapterBeingEdited] = useState<ChapterContent | null>(null);
 
     const MAX_IMAGE_UPLOADS = 12;
     const allowedMimeTypes = new Set(['image/png', 'image/jpeg', 'image/webp']);
@@ -40,9 +48,18 @@ const App: React.FC = () => {
         });
     };
 
-    const handleGenerate = (config: BookConfig) => {
+    const handleGenerate = async (config: BookConfig) => {
+        if (!quota.canGenerate) {
+            setQuotaNotice('Daily limit reached. Share BookForge on WhatsApp to unlock another slot.');
+            return;
+        }
+        setQuotaNotice(null);
         setSelectedChapterIndex(null);
-        generateBook(config);
+        quota.consume();
+        const success = await generateBook(config);
+        if (!success) {
+            quota.refund();
+        }
     };
 
     const handleReset = () => {
@@ -76,6 +93,9 @@ const App: React.FC = () => {
                     size: file.size,
                     type: file.type,
                     include: true,
+                    source: 'upload',
+                    createdAt: Date.now(),
+                    placement: { type: 'gallery' },
                 });
             }
             setUserImages(prev => [...prev, ...newAssets]);
@@ -101,9 +121,97 @@ const App: React.FC = () => {
         setImageStatus('Cleared all uploads.');
     };
 
+    const handleCaptionChange = (id: string, caption: string) => {
+        setUserImages(prev => prev.map(image => image.id === id ? { ...image, caption } : image));
+    };
+
+    const handleImagePlacementChange = (id: string, placement: ImagePlacement) => {
+        setUserImages(prev => prev.map(image => image.id === id ? { ...image, placement } : image));
+    };
+
+    const handleReorderImage = (id: string, direction: 'up' | 'down') => {
+        setUserImages(prev => {
+            const index = prev.findIndex(image => image.id === id);
+            if (index === -1) return prev;
+            const targetIndex = direction === 'up' ? index - 1 : index + 1;
+            if (targetIndex < 0 || targetIndex >= prev.length) return prev;
+            const next = [...prev];
+            const [moved] = next.splice(index, 1);
+            next.splice(targetIndex, 0, moved);
+            return next;
+        });
+    };
+
+    const blobToDataUrl = (blob: Blob): Promise<string> => {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = () => reject(reader.error || new Error('Failed to read blob.'));
+            reader.readAsDataURL(blob);
+        });
+    };
+
+    const handleAddImageByUrl = async (url: string) => {
+        try {
+            setImageStatus('Fetching remote image...');
+            const response = await fetch(url);
+            if (!response.ok) {
+                throw new Error('Image request failed.');
+            }
+            const blob = await response.blob();
+            const mime = blob.type || 'image/png';
+            if (!allowedMimeTypes.has(mime)) {
+                throw new Error('Unsupported image type.');
+            }
+            const dataUrl = await blobToDataUrl(blob);
+            const name = url.split('/').pop() || 'shared-image';
+            const asset: UserImageAsset = {
+                id: createImageId(),
+                name,
+                dataUrl,
+                size: blob.size,
+                type: mime,
+                include: true,
+                source: 'url',
+                createdAt: Date.now(),
+                placement: { type: 'gallery' },
+            };
+            setUserImages(prev => {
+                if (prev.length >= MAX_IMAGE_UPLOADS) {
+                    setImageStatus(`Gallery is full. Remove an image to add more (max ${MAX_IMAGE_UPLOADS}).`);
+                    return prev;
+                }
+                return [...prev, asset];
+            });
+            setImageStatus('Link imported successfully.');
+        } catch (error) {
+            console.error('Failed to grab image via URL', error);
+            setImageStatus('Could not fetch that link. Make sure it points to a direct PNG/JPG/WEBP file.');
+        }
+    };
+
+    const handleShareForBonus = () => {
+        const shareMessage = encodeURIComponent('I am creating polished AI books with BookForge. Try it here: https://kitss-hvfpj0a02-mrhonest255s-projects.vercel.app/');
+        if (typeof window !== 'undefined') {
+            window.open(`https://wa.me/?text=${shareMessage}`, '_blank');
+        }
+        quota.addShareBonus();
+        setQuotaNotice('Thanks for sharing! You unlocked one extra generation.');
+    };
+
     const selectedChapter = state.book?.chapters.find(c => c.index === selectedChapterIndex);
     const isGenerating = state.step !== 'idle' && state.step !== 'done' && state.step !== 'error';
     const activeImages = userImages.filter(image => image.include);
+
+    const handleEditChapter = (chapter: ChapterContent) => {
+        setChapterBeingEdited(chapter);
+    };
+
+    const handleSaveEditedChapter = (text: string) => {
+        if (!chapterBeingEdited) return;
+        updateChapterText(chapterBeingEdited.index, text);
+        setChapterBeingEdited(null);
+    };
 
     return (
         <div className="relative min-h-screen overflow-hidden bg-[#050615] text-slate-100">
@@ -129,7 +237,7 @@ const App: React.FC = () => {
                         <div className="flex flex-wrap items-center justify-center gap-3 text-sm text-slate-400">
                             <span>Markdown-friendly prose</span>
                             <span className="text-slate-600">•</span>
-                            <span>PDF export with typography controls</span>
+                            <span>Editorial PDF themes & drop caps</span>
                             <span className="text-slate-600">•</span>
                             <span>Optional gallery with your own imagery</span>
                         </div>
@@ -144,8 +252,17 @@ const App: React.FC = () => {
                     {{
                         left: (
                             <div className="flex flex-col gap-6">
-                                <BookConfigForm onGenerate={handleGenerate} isGenerating={isGenerating} />
+                                <QuotaBanner
+                                    remaining={quota.remaining}
+                                    baseLimit={quota.baseLimit}
+                                    onShare={handleShareForBonus}
+                                    notice={quotaNotice}
+                                />
+                                <BookConfigForm onGenerate={handleGenerate} isGenerating={isGenerating} quotaRemaining={quota.remaining} canGenerate={quota.canGenerate} />
                                 <GenerationProgress state={state} />
+                                {isGenerating && (
+                                    <CreativeInterlude stepLabel={state.step === 'outline' ? 'we outline' : 'chapters render'} />
+                                )}
                                 <ImageUploadPanel
                                     images={userImages}
                                     statusMessage={imageStatus}
@@ -153,7 +270,10 @@ const App: React.FC = () => {
                                     onToggleInclude={handleToggleImage}
                                     onRemove={handleRemoveImage}
                                     onClearAll={handleClearImages}
+                                    onCaptionChange={handleCaptionChange}
+                                    onAddByUrl={handleAddImageByUrl}
                                 />
+                                <ExperienceHighlights />
                                 <div className="rounded-3xl border border-amber-500/30 bg-amber-500/10 p-5 text-sm text-amber-100">
                                     <p className="font-semibold">Content Safety Reminder</p>
                                     <p className="mt-1 text-amber-200/80">
@@ -174,7 +294,16 @@ const App: React.FC = () => {
                                             </div>
                                             <div className="flex flex-wrap items-center gap-3">
                                                 <div className="flex flex-col items-center gap-2">
-                                                    <PdfDownloadButton book={state.book} images={userImages} isReady={state.step === 'done'} />
+                                                    <PdfDownloadButton
+                                                        book={state.book}
+                                                        images={userImages}
+                                                        isReady={state.step === 'done'}
+                                                        chapters={state.book.chapters}
+                                                        onUpdateImagePlacement={handleImagePlacementChange}
+                                                        onReorderImage={handleReorderImage}
+                                                        onToggleInclude={handleToggleImage}
+                                                        onRemoveImage={handleRemoveImage}
+                                                    />
                                                     <p className="text-center text-xs text-slate-400">
                                                         {activeImages.length > 0
                                                             ? `${activeImages.length} image${activeImages.length === 1 ? '' : 's'} queued for the PDF gallery.`
@@ -192,7 +321,7 @@ const App: React.FC = () => {
                                         <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
                                             <BookPreview book={state.book} onSelectChapter={setSelectedChapterIndex} selectedChapterIndex={selectedChapterIndex} />
                                             {selectedChapter ? (
-                                                <ChapterPreview chapter={selectedChapter} />
+                                                <ChapterPreview chapter={selectedChapter} onEdit={handleEditChapter} />
                                             ) : (
                                                 <div className="flex min-h-[20rem] items-center justify-center rounded-3xl border border-dashed border-white/10 bg-black/20 text-sm text-slate-400">
                                                     Select a chapter to see the live draft.
@@ -214,6 +343,13 @@ const App: React.FC = () => {
                     }}
                 </Layout>
             </div>
+            {chapterBeingEdited && (
+                <ChapterEditModal
+                    chapter={chapterBeingEdited}
+                    onCancel={() => setChapterBeingEdited(null)}
+                    onSave={handleSaveEditedChapter}
+                />
+            )}
         </div>
     );
 };

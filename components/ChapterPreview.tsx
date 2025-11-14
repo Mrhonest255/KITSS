@@ -4,9 +4,10 @@ import ChapterDownloadButton from './ChapterDownloadButton';
 
 interface ChapterPreviewProps {
     chapter: ChapterContent;
+    onEdit?: (chapter: ChapterContent) => void;
 }
 
-const ChapterPreview: React.FC<ChapterPreviewProps> = ({ chapter }) => {
+const ChapterPreview: React.FC<ChapterPreviewProps> = ({ chapter, onEdit }) => {
     const paragraphs = chapter.text.split('\n\n').map(p => p.trim()).filter(Boolean);
 
     return (
@@ -16,7 +17,18 @@ const ChapterPreview: React.FC<ChapterPreviewProps> = ({ chapter }) => {
                     <p className="text-xs uppercase tracking-[0.3em] text-slate-500">Chapter {chapter.index}</p>
                     <h3 className="text-2xl font-semibold text-white">{chapter.title}</h3>
                 </div>
-                <ChapterDownloadButton chapter={chapter} />
+                <div className="flex items-center gap-2">
+                    {onEdit && (
+                        <button
+                            type="button"
+                            onClick={() => onEdit(chapter)}
+                            className="rounded-2xl border border-white/10 px-3 py-1.5 text-xs font-semibold text-white hover:border-white/40"
+                        >
+                            Edit text
+                        </button>
+                    )}
+                    <ChapterDownloadButton chapter={chapter} />
+                </div>
             </div>
             <div className="max-h-[26rem] overflow-y-auto rounded-2xl border border-white/5 bg-black/20 p-5 text-sm leading-relaxed text-slate-200">
                 {paragraphs.map((paragraph, idx) => (
