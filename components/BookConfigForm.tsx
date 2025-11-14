@@ -91,7 +91,7 @@ const BookConfigForm: React.FC<BookConfigFormProps> = ({ onGenerate, isGeneratin
 
             <div className="flex flex-wrap items-center gap-4 rounded-2xl border border-white/5 bg-white/5 px-4 py-3 text-sm text-slate-200">
                 <BookIcon className="h-5 w-5 text-indigo-300" />
-                <p>Your manuscript will be generated with text-only chapters for print-ready PDFs. Visuals are intentionally excluded for a distraction-free layout.</p>
+                <p>Your manuscript defaults to a text-first layout. Upload personal imagery in the "Optional media" panel to append a curated gallery to the PDF.</p>
             </div>
 
             <button

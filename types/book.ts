@@ -43,6 +43,22 @@ export interface GenerationState {
   message: string;
   error?: string;
   book?: GeneratedBook;
+  warnings?: string[];
+}
+
+export interface UserImageAsset {
+  id: string;
+  name: string;
+  dataUrl: string;
+  size: number;
+  type: string;
+  include: boolean;
+}
+
+export interface ServiceResult<T> {
+  data: T;
+  usedFallback: boolean;
+  warning?: string;
 }
 
 // --- PDF Configuration Types ---
@@ -74,4 +90,8 @@ export interface PdfConfig {
         heading: PdfFontConfig;
         body: PdfFontConfig;
     };
+}
+
+export interface PdfBuildOptions {
+  images?: UserImageAsset[];
 }

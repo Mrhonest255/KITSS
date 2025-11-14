@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react';
-import { GeneratedBook, PdfConfig } from '../types/book';
+import { GeneratedBook, PdfConfig, PdfBuildOptions, UserImageAsset } from '../types/book';
 import { buildBookPdf } from '../services/pdfService';
 import { DownloadIcon } from './icons/DownloadIcon';
 import PdfConfigModal from './PdfConfigModal';
@@ -8,12 +8,14 @@ import { SettingsIcon } from './icons/SettingsIcon';
 
 interface PdfDownloadButtonProps {
     book?: GeneratedBook;
+    images: UserImageAsset[];
     isReady: boolean;
 }
 
-const PdfDownloadButton: React.FC<PdfDownloadButtonProps> = ({ book, isReady }) => {
+const PdfDownloadButton: React.FC<PdfDownloadButtonProps> = ({ book, images, isReady }) => {
     const [isBuilding, setIsBuilding] = useState(false);
     const [isModalOpen, setIsModalOpen] = useState(false);
+    const includedImages = images.filter(image => image.include);
 
     const handleDownload = async (config: Partial<PdfConfig>) => {
         if (!book) return;
@@ -21,7 +23,8 @@ const PdfDownloadButton: React.FC<PdfDownloadButtonProps> = ({ book, isReady }) 
         setIsBuilding(true);
         setIsModalOpen(false);
         try {
-            const pdfBytes = await buildBookPdf(book, config);
+            const options: PdfBuildOptions = { images: includedImages };
+            const pdfBytes = await buildBookPdf(book, config, options);
             const blob = new Blob([pdfBytes], { type: 'application/pdf' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');

@@ -1,9 +1,68 @@
 
-import { BookConfig, BookOutline, ChapterContent, ChapterOutline } from '../types/book';
+import { BookConfig, BookOutline, ChapterContent, ChapterOutline, ServiceResult } from '../types/book';
 import { GoogleGenAI, Type } from "@google/genai";
 import { apiKey } from '../config/apiKey';
 
 const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
+
+const RETRYABLE_CODES = new Set([429, 500, 503]);
+const RETRYABLE_STATUSES = new Set(['UNAVAILABLE', 'RESOURCE_EXHAUSTED']);
+
+interface GeminiErrorDetails {
+    code?: number;
+    status?: string;
+    message: string;
+}
+
+const parseGeminiError = (error: unknown): GeminiErrorDetails => {
+    if (typeof error === 'object' && error !== null) {
+        const anyError = error as Record<string, any>;
+        const rawMessage = typeof anyError.message === 'string'
+            ? anyError.message
+            : JSON.stringify(anyError);
+        const codeFromMessage = /"code":(\d+)/.exec(rawMessage)?.[1];
+        const parsed: GeminiErrorDetails = {
+            code: anyError.code ?? anyError.status?.code ?? (codeFromMessage ? Number(codeFromMessage) : undefined),
+            status: typeof anyError.status === 'string'
+                ? anyError.status
+                : typeof anyError.status?.details === 'string'
+                    ? anyError.status.details
+                    : anyError.status?.message,
+            message: rawMessage,
+        };
+        return parsed;
+    }
+    return { message: String(error) };
+};
+
+const isTransientGeminiError = (error: unknown): boolean => {
+    const parsed = parseGeminiError(error);
+    const msg = parsed.message.toLowerCase();
+    if (parsed.code && RETRYABLE_CODES.has(parsed.code)) return true;
+    if (parsed.status && RETRYABLE_STATUSES.has(parsed.status)) return true;
+    return msg.includes('overloaded') || msg.includes('unavailable') || msg.includes('try again later');
+};
+
+const formatFallbackWarning = (stage: string, error: unknown): string => {
+    const parsed = parseGeminiError(error);
+    const detailParts: string[] = [];
+    if (parsed.status) detailParts.push(`status ${parsed.status}`);
+    if (parsed.code) detailParts.push(`code ${parsed.code}`);
+    const detail = detailParts.length ? ` (${detailParts.join(', ')})` : '';
+    return `Gemini ${stage} service is temporarily unavailable${detail}. Using offline mock data so you can keep iterating.`;
+};
+
+const withRetry = async <T>(operation: () => Promise<T>, retries = 2, initialDelay = 1500): Promise<T> => {
+    try {
+        return await operation();
+    } catch (error) {
+        if (retries > 0 && isTransientGeminiError(error)) {
+            await delay(initialDelay);
+            return withRetry(operation, retries - 1, Math.round(initialDelay * 1.5));
+        }
+        throw error;
+    }
+};
 
 // --- MOCK IMPLEMENTATIONS (Fallback) ---
 
@@ -91,7 +150,7 @@ async function generateChaptersWithGemini(config: BookConfig, outline: BookOutli
             2. Ensure the content is safe, well-structured, and uses markdown headings where appropriate.
         `;
         
-        const response = await ai.models.generateContent({
+            const response = await withRetry(() => ai.models.generateContent({
             model: 'gemini-2.5-pro',
             contents: prompt,
             config: {
@@ -102,7 +161,7 @@ async function generateChaptersWithGemini(config: BookConfig, outline: BookOutli
                      required: ["text"]
                 }
             }
-        });
+            }));
         
         const content = JSON.parse(response.text.trim()) as Pick<ChapterContent, 'text'>;
         chapterContents.push({ ...content, index: chapterOutline.index, title: chapterOutline.title });
@@ -113,18 +172,52 @@ async function generateChaptersWithGemini(config: BookConfig, outline: BookOutli
 
 // --- EXPORTED FUNCTIONS ---
 
-export async function generateOutline(config: BookConfig): Promise<BookOutline> {
+export async function generateOutline(config: BookConfig): Promise<ServiceResult<BookOutline>> {
     if (!apiKey) {
         console.warn("VITE_API_KEY not set. Using mock data for outline generation.");
-        return generateOutlineMock(config);
+        const data = await generateOutlineMock(config);
+        return {
+            data,
+            usedFallback: true,
+            warning: 'Gemini API key missing. Using offline mock outline instead.'
+        };
     }
-    return generateOutlineWithGemini(config);
+
+    try {
+        const data = await withRetry(() => generateOutlineWithGemini(config));
+        return { data, usedFallback: false };
+    } catch (error) {
+        console.warn('Gemini outline generation failed. Falling back to mock outline.', error);
+        const data = await generateOutlineMock(config);
+        return {
+            data,
+            usedFallback: true,
+            warning: formatFallbackWarning('outline generation', error)
+        };
+    }
 }
 
-export async function generateChapters(config: BookConfig, outline: BookOutline): Promise<ChapterContent[]> {
+export async function generateChapters(config: BookConfig, outline: BookOutline): Promise<ServiceResult<ChapterContent[]>> {
     if (!apiKey) {
         console.warn("VITE_API_KEY not set. Using mock data for chapter generation.");
-        return generateChaptersMock(config, outline);
+        const data = await generateChaptersMock(config, outline);
+        return {
+            data,
+            usedFallback: true,
+            warning: 'Gemini API key missing. Using offline mock chapters instead.'
+        };
     }
-    return generateChaptersWithGemini(config, outline);
+
+    try {
+        const data = await generateChaptersWithGemini(config, outline);
+        return { data, usedFallback: false };
+    } catch (error) {
+        console.warn('Gemini chapter drafting failed. Falling back to mock chapters.', error);
+        const data = await generateChaptersMock(config, outline);
+        return {
+            data,
+            usedFallback: true,
+            warning: formatFallbackWarning('chapter drafting', error)
+        };
+    }
 }

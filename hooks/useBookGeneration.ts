@@ -9,6 +9,7 @@ const initialState: GenerationState = {
     message: 'Waiting to start...',
     book: undefined,
     error: undefined,
+    warnings: [],
 };
 
 export const useBookGeneration = () => {
@@ -20,22 +21,32 @@ export const useBookGeneration = () => {
 
     const generateBook = useCallback(async (config: BookConfig) => {
         try {
-            updateState({ step: 'outline', progress: 5, message: 'Generating book outline...', book: undefined, error: undefined });
-            const outline = await textGeneratorService.generateOutline(config);
+            const warnings: string[] = [];
+            updateState({ step: 'outline', progress: 5, message: 'Generating book outline...', book: undefined, error: undefined, warnings: [] });
+            const outlineResult = await textGeneratorService.generateOutline(config);
+            if (outlineResult.warning) warnings.push(outlineResult.warning);
+            const outline = outlineResult.data;
+
             updateState({
                 step: 'chapters',
                 progress: 25,
                 message: 'Outline complete. Generating chapters...',
                 book: { config, outline, chapters: [] },
+                warnings: [...warnings],
             });
 
-            const chapters = await textGeneratorService.generateChapters(config, outline);
+            const chaptersResult = await textGeneratorService.generateChapters(config, outline);
+            if (chaptersResult.warning) warnings.push(chaptersResult.warning);
+            const chapters = chaptersResult.data;
 
             updateState({
                 step: 'done',
                 progress: 100,
-                message: 'Book generation complete! Download your PDF when ready.',
+                message: warnings.length
+                    ? 'Book generation complete with a few warnings. Review the notice below.'
+                    : 'Book generation complete! Download your PDF when ready.',
                 book: { config, outline, chapters },
+                warnings,
             });
 
         } catch (e) {
@@ -44,6 +55,7 @@ export const useBookGeneration = () => {
                 step: 'error',
                 error: `Generation failed: ${error}`,
                 message: 'An error occurred.',
+                warnings: [],
             });
         }
     }, []);

@@ -32,6 +32,18 @@ const GenerationProgress: React.FC<GenerationProgressProps> = ({ state }) => {
                     style={{ width: `${state.progress}%` }}
                 ></div>
             </div>
+            {state.warnings && state.warnings.length > 0 && (
+                <div className="mt-4 rounded-2xl border border-amber-500/40 bg-amber-500/10 p-4 text-xs text-amber-100">
+                    <p className="font-semibold">Heads up</p>
+                    <ul className="mt-2 space-y-1">
+                        {state.warnings.map((warning, index) => (
+                            <li key={`${warning}-${index}`} className="leading-relaxed">
+                                • {warning}
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            )}
             {isError && state.error && (
                 <div className="mt-4 rounded-2xl border border-red-500/40 bg-red-500/10 p-4 text-xs text-red-100">
                     <p className="font-semibold">Error details</p>
