@@ -164,7 +164,7 @@ const PdfDesignerModal: React.FC<PdfDesignerModalProps> = ({
     const previewInstructions = selectedImage ? 'Pick a placement zone below for the highlighted image.' : 'Select an image on the right, then click a zone to place it.';
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 p-2 sm:p-4" onClick={onClose}>
             <div className="w-full max-w-6xl rounded-3xl border border-white/10 bg-slate-950 text-white shadow-2xl" onClick={e => e.stopPropagation()}>
                 <div className="flex items-center justify-between border-b border-white/10 px-6 py-4">
                     <div>

@@ -1,8 +1,9 @@
-
 import { PDFDocument, rgb, StandardFonts, PageSizes, PDFFont, PDFPage } from 'pdf-lib';
 import { GeneratedBook, PdfBuildOptions, PdfConfig, PdfFontFamily, PdfStylePreset, UserImageAsset, ChapterImageAnchor } from '../types/book';
 import { getThemeDefinition } from './pdfThemes';
 import { DEFAULT_PDF_CONFIG } from '../config/pdfDefaults';
+import { parseMarkdownToBlocks } from './markdownParser';
+import { StructuredBlock, RichTextSpan } from './pdfTypes';
 
 const hexToRgb = (value: string) => {
     const hex = value.replace('#', '');
@@ -29,6 +30,7 @@ interface ThemeProfile {
     lineHeightMultiplier: number;
     paragraphSpacingMultiplier: number;
 }
+
 const getTheme = (preset?: PdfStylePreset): ThemeProfile => {
     const definition = getThemeDefinition(preset);
     return {
@@ -49,17 +51,12 @@ const getTheme = (preset?: PdfStylePreset): ThemeProfile => {
     };
 };
 
-
-// --- Helper Functions ---
-
 function wrapText(text: string, font: PDFFont, fontSize: number, maxWidth: number): string[] {
     const lines: string[] = [];
-    // Ensure text is treated as a string to avoid errors with undefined/null inputs
     const paragraphs = String(text).split('\n');
-    
     for (const paragraph of paragraphs) {
         if (paragraph.trim() === '') {
-            lines.push(''); // Preserve empty lines for paragraph breaks
+            lines.push('');
             continue;
         }
         let currentLine = '';
@@ -81,7 +78,7 @@ function wrapText(text: string, font: PDFFont, fontSize: number, maxWidth: numbe
 const fontMapping = {
     TimesRoman: { regular: StandardFonts.TimesRoman, bold: StandardFonts.TimesRomanBold, italic: StandardFonts.TimesRomanItalic },
     Helvetica: { regular: StandardFonts.Helvetica, bold: StandardFonts.HelveticaBold, italic: StandardFonts.HelveticaOblique },
-    Courier: { regular: StandardFonts.Courier, bold: StandardFonts.CourierBold, italic: StandardFonts.CourierOblique }
+    Courier: { regular: StandardFonts.Courier, bold: StandardFonts.CourierBold, italic: StandardFonts.CourierOblique },
 };
 
 const decodeBase64 = (value: string): string => {
@@ -115,63 +112,183 @@ const embedUserImage = async (pdfDoc: PDFDocument, asset: UserImageAsset) => {
 
 type EmbeddedImage = Awaited<ReturnType<typeof embedUserImage>>;
 
-// --- Main PDF Generation Function ---
-
-interface TextBlock {
-    kind: 'heading' | 'subheading' | 'paragraph' | 'bullet' | 'quote';
-    content: string;
+interface StyledToken {
+    text: string;
+    font: PDFFont;
+    width: number;
+    isSpace: boolean;
 }
 
-const parseChapterText = (text: string): TextBlock[] => {
-    const blocks: TextBlock[] = [];
-    const lines = String(text ?? '').split('\n');
-    let paragraphBuffer: string[] = [];
-
-    const flushParagraph = () => {
-        if (paragraphBuffer.length === 0) return;
-        const paragraphText = paragraphBuffer.join(' ').trim();
-        if (paragraphText) {
-            blocks.push({ kind: 'paragraph', content: paragraphText });
+const tokenizeSpans = (spans: RichTextSpan[], fonts: { regular: PDFFont; bold: PDFFont; italic: PDFFont }, fontSize: number): StyledToken[] => {
+    const tokens: StyledToken[] = [];
+    for (const span of spans) {
+        const font = span.bold ? fonts.bold : span.italic ? fonts.italic : fonts.regular;
+        const parts = span.text.split(/(\s+)/);
+        for (const part of parts) {
+            if (!part) continue;
+            const isSpace = /^\s+$/.test(part);
+            const text = isSpace ? ' ' : part;
+            tokens.push({
+                text,
+                font,
+                width: font.widthOfTextAtSize(text, fontSize),
+                isSpace,
+            });
         }
-        paragraphBuffer = [];
+    }
+    return tokens;
+};
+
+const wrapTokens = (tokens: StyledToken[], maxWidth: number): StyledToken[][] => {
+    const lines: StyledToken[][] = [];
+    let currentLine: StyledToken[] = [];
+    let lineWidth = 0;
+
+    const pushLine = () => {
+        if (!currentLine.length) return;
+        let end = currentLine.length;
+        while (end > 0 && currentLine[end - 1].isSpace) {
+            end--;
+        }
+        if (end > 0) {
+            lines.push(currentLine.slice(0, end));
+        }
     };
 
-    for (const rawLine of lines) {
-        const line = rawLine.trim();
-        if (!line) {
-            flushParagraph();
+    for (const token of tokens) {
+        if (!token.isSpace && lineWidth + token.width > maxWidth && currentLine.length) {
+            pushLine();
+            currentLine = [];
+            lineWidth = 0;
+        }
+        if (token.isSpace && !currentLine.length) {
             continue;
         }
-
-        if (/^#{2,}/.test(line)) {
-            flushParagraph();
-            const type = line.startsWith('###') ? 'subheading' : 'heading';
-            blocks.push({ kind: type, content: line.replace(/^#+\s*/, '') });
-            continue;
-        }
-
-        if (/^[*-]\s+/.test(line)) {
-            flushParagraph();
-            blocks.push({ kind: 'bullet', content: line.replace(/^[*-]\s+/, '') });
-            continue;
-        }
-
-        if (line.startsWith('>')) {
-            flushParagraph();
-            blocks.push({ kind: 'quote', content: line.replace(/^>\s*/, '') });
-            continue;
-        }
-
-        paragraphBuffer.push(line);
+        currentLine.push(token);
+        lineWidth += token.width;
     }
 
-    flushParagraph();
-    return blocks;
+    pushLine();
+    return lines;
+};
+
+const drawRichLine = (
+    page: PDFPage,
+    lineTokens: StyledToken[],
+    startX: number,
+    y: number,
+    fontSize: number,
+    color: ReturnType<typeof rgb>
+) => {
+    let cursorX = startX;
+    for (const token of lineTokens) {
+        page.drawText(token.text, {
+            x: cursorX,
+            y,
+            font: token.font,
+            size: fontSize,
+            color,
+        });
+        cursorX += token.width;
+    }
+};
+
+interface ParagraphOptions {
+    indent?: number;
+    spacingBottom?: number;
+    color?: ReturnType<typeof rgb>;
+    beforeFirstLine?: (lineY: number) => void;
+}
+
+const drawRichParagraph = (
+    spans: RichTextSpan[],
+    fonts: { regular: PDFFont; bold: PDFFont; italic: PDFFont },
+    state: { page: PDFPage; y: number },
+    ensureSpaceFn: (amount: number) => void,
+    originX: number,
+    contentWidth: number,
+    fontSize: number,
+    lineHeight: number,
+    paragraphSpacing: number,
+    defaultColor: ReturnType<typeof rgb>,
+    options: ParagraphOptions = {}
+) => {
+    if (!spans?.length) return;
+    const indent = options.indent ?? 0;
+    const tokens = tokenizeSpans(spans, fonts, fontSize);
+    const lines = wrapTokens(tokens, Math.max(20, contentWidth - indent));
+    if (!lines.length) return;
+    const spacingBottom = options.spacingBottom ?? paragraphSpacing;
+
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+        const lineTokens = lines[lineIndex];
+        ensureSpaceFn(lineHeight);
+        if (lineIndex === 0 && options.beforeFirstLine) {
+            options.beforeFirstLine(state.y);
+        }
+        drawRichLine(state.page, lineTokens, originX + indent, state.y, fontSize, options.color ?? defaultColor);
+        state.y -= lineHeight;
+    }
+    state.y -= spacingBottom;
+};
+
+const spansToPlainText = (spans: RichTextSpan[]) =>
+    spans
+        .map(span => span.text)
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+const normalizeForComparison = (value?: string): string =>
+    value
+        ?.replace(/chapter\s+\d+[:\-]?/i, '')
+        .replace(/[^a-z0-9]+/gi, ' ')
+        .trim()
+        .toLowerCase() ?? '';
+
+const stripLeadingChapterHeading = (blocks: StructuredBlock[], chapterTitle: string): StructuredBlock[] => {
+    const normalizedTitle = normalizeForComparison(chapterTitle);
+    if (!normalizedTitle) return blocks;
+    let startIndex = 0;
+    while (startIndex < blocks.length) {
+        const block = blocks[startIndex];
+        if (!block) break;
+        let candidate = '';
+        if (block.kind === 'heading') {
+            candidate = block.text;
+        } else if (block.kind === 'paragraph') {
+            candidate = spansToPlainText(block.spans);
+        } else {
+            break;
+        }
+        if (normalizeForComparison(candidate) === normalizedTitle) {
+            startIndex++;
+            continue;
+        }
+        break;
+    }
+    return startIndex === 0 ? blocks : blocks.slice(startIndex);
 };
 
 const drawPageBackground = (page: PDFPage, width: number, height: number, color: ReturnType<typeof rgb>) => {
     page.drawRectangle({ x: 0, y: 0, width, height, color });
 };
+
+interface PageMeta {
+    page: PDFPage;
+    role: 'cover' | 'gallery' | 'toc' | 'chapter';
+    chapterTitle?: string;
+}
+
+interface TocEntry {
+    title: string;
+    pageNumber: number;
+}
+
+interface TocPageState {
+    page: PDFPage;
+    nextY: number;
+}
 
 export async function buildBookPdf(book: GeneratedBook, userConfig: Partial<PdfConfig> = {}, options: PdfBuildOptions = {}): Promise<Uint8Array> {
     const config: PdfConfig = {
@@ -198,7 +315,7 @@ export async function buildBookPdf(book: GeneratedBook, userConfig: Partial<PdfC
     };
 
     const uniqueFontFamilies = new Set([config.fonts.title.family, config.fonts.heading.family, config.fonts.body.family]);
-    const embeddedFonts: { [key in PdfFontFamily]?: { regular: PDFFont, bold: PDFFont, italic: PDFFont } } = {};
+    const embeddedFonts: { [key in PdfFontFamily]?: { regular: PDFFont; bold: PDFFont; italic: PDFFont } } = {};
     for (const family of uniqueFontFamilies) {
         const fontSet = fontMapping[family];
         embeddedFonts[family] = {
@@ -217,11 +334,14 @@ export async function buildBookPdf(book: GeneratedBook, userConfig: Partial<PdfC
     const titleFont = resolveFont(config.fonts.title);
     const headingFont = resolveFont(config.fonts.heading);
     const bodyFont = resolveFont(config.fonts.body);
-    const italicBodyFont = getFontVariant(config.fonts.body.family, 'italic');
+    const bodyBoldFont = getFontVariant(config.fonts.body.family, 'bold');
+    const bodyItalicFont = getFontVariant(config.fonts.body.family, 'italic');
 
     const pageDimensions = PageSizes[config.pageSize];
     const [pageWidth, pageHeight] = pageDimensions;
+    const originX = config.margins.left;
     const contentWidth = pageWidth - config.margins.left - config.margins.right;
+
     const includedImages = options.images?.filter(image => image.include) ?? [];
     const galleryImages = includedImages.filter(image => !image.placement || image.placement.type === 'gallery');
     const coverImages = includedImages.filter(image => image.placement?.type === 'cover');
@@ -233,89 +353,86 @@ export async function buildBookPdf(book: GeneratedBook, userConfig: Partial<PdfC
             chapterImageMap.set(image.placement.chapterIndex, list);
         }
     }
+
     const lineHeight = config.fonts.body.size * theme.lineHeightMultiplier;
     const paragraphSpacing = config.fonts.body.size * theme.paragraphSpacingMultiplier;
-    const enableDropCaps = options.enableDropCaps ?? true;
+
+    const pageMeta: PageMeta[] = [];
+    const coverPageCount = 1; // cover page is excluded from numbering
+    const registerPage = (page: PDFPage, meta: Omit<PageMeta, 'page'>) => {
+        pageMeta.push({ page, ...meta });
+        return page;
+    };
+
+    const addContentPage = (meta: Omit<PageMeta, 'page'>, background: ReturnType<typeof rgb> = theme.pageBackground) => {
+        const page = pdfDoc.addPage(pageDimensions);
+        drawPageBackground(page, pageWidth, pageHeight, background);
+        return registerPage(page, meta);
+    };
 
     // --- Cover Page ---
     const coverPage = pdfDoc.addPage(pageDimensions);
     drawPageBackground(coverPage, pageWidth, pageHeight, theme.coverBackground);
-
-    coverPage.drawRectangle({
-        x: 0,
-        y: pageHeight * 0.62,
-        width: pageWidth,
-        height: pageHeight * 0.38,
-        color: theme.accentSoft,
-        opacity: 0.35,
-    });
-
-    coverPage.drawRectangle({
-        x: config.margins.left,
-        y: pageHeight * 0.65,
-        width: pageWidth - config.margins.left - config.margins.right,
-        height: 6,
-        color: theme.ribbonColor,
-        opacity: 0.8,
-    });
+    registerPage(coverPage, { role: 'cover' });
 
     const coverBackgroundAsset = coverImages.find(image => image.placement?.type === 'cover' && image.placement.coverSlot === 'background');
     if (coverBackgroundAsset) {
         const embedded = await getEmbeddedImageForAsset(coverBackgroundAsset);
-        const maxWidth = pageWidth - config.margins.left * 2;
-        const maxHeight = pageHeight * 0.45;
+        const maxWidth = pageWidth - originX * 2;
+        const maxHeight = pageHeight * 0.55;
         const scale = Math.min(1, maxWidth / embedded.width, maxHeight / embedded.height);
         const drawWidth = embedded.width * scale;
         const drawHeight = embedded.height * scale;
         coverPage.drawImage(embedded, {
             x: (pageWidth - drawWidth) / 2,
-            y: pageHeight * 0.68 + 40,
+            y: pageHeight * 0.35,
             width: drawWidth,
             height: drawHeight,
             opacity: 0.35,
         });
     }
 
-    let y = pageHeight * 0.68;
+    const coverYStart = pageHeight * 0.58;
+    let coverCurrentY = coverYStart;
     const titleLines = wrapText(book.config.title, titleFont, config.fonts.title.size, contentWidth * 0.9);
     for (const line of titleLines) {
         const textWidth = titleFont.widthOfTextAtSize(line, config.fonts.title.size);
         coverPage.drawText(line, {
             x: (pageWidth - textWidth) / 2,
-            y,
+            y: coverCurrentY,
             font: titleFont,
             size: config.fonts.title.size,
             color: theme.title,
         });
-        y -= config.fonts.title.size * 1.2;
+        coverCurrentY -= config.fonts.title.size * 1.2;
     }
 
     const subtitle = `${book.config.genre} • ${book.config.topic}`;
-    const subtitleWidth = headingFont.widthOfTextAtSize(subtitle, 14);
+    const subtitleWidth = headingFont.widthOfTextAtSize(subtitle, config.fonts.heading.size * 0.6);
     coverPage.drawText(subtitle, {
         x: (pageWidth - subtitleWidth) / 2,
-        y: y - 10,
+        y: coverCurrentY - 10,
         font: headingFont,
-        size: 14,
+        size: config.fonts.heading.size * 0.6,
         color: theme.caption,
     });
 
-    const footerBaseY = config.margins.bottom + 40;
-    if (book.config.dedication) {
-        coverPage.drawText(`Created for ${book.config.dedication}`, {
-            x: config.margins.left,
-            y: footerBaseY + 18,
-            font: italicBodyFont,
+    const dedication = book.config.dedication?.trim();
+    if (dedication) {
+        coverPage.drawText(`For ${dedication}`, {
+            x: originX,
+            y: config.margins.bottom + 40,
+            font: bodyItalicFont,
             size: 12,
             color: theme.caption,
         });
     }
 
     coverPage.drawText('Crafted with BookForge AI', {
-        x: config.margins.left,
-        y: footerBaseY,
+        x: originX,
+        y: config.margins.bottom + 20,
         font: bodyFont,
-        size: 12,
+        size: 11,
         color: theme.caption,
     });
 
@@ -324,23 +441,83 @@ export async function buildBookPdf(book: GeneratedBook, userConfig: Partial<PdfC
         const embedded = await getEmbeddedImageForAsset(coverBadgeAsset);
         const badgeSize = Math.min(140, pageWidth * 0.2);
         const scale = Math.min(1, badgeSize / embedded.width, badgeSize / embedded.height);
-        const drawWidth = embedded.width * scale;
-        const drawHeight = embedded.height * scale;
         coverPage.drawImage(embedded, {
-            x: pageWidth - config.margins.right - drawWidth,
-            y: footerBaseY + 10,
-            width: drawWidth,
-            height: drawHeight,
+            x: pageWidth - config.margins.right - embedded.width * scale,
+            y: config.margins.bottom + 30,
+            width: embedded.width * scale,
+            height: embedded.height * scale,
         });
     }
 
+    // --- Table of Contents Placeholder Pages ---
+    const tocEntries: TocEntry[] = [];
+    const tocPages: TocPageState[] = [];
+    const availableTocHeight = pageHeight - config.margins.top - config.margins.bottom - config.fonts.heading.size * 1.5;
+    const tocEntriesPerPage = Math.max(1, Math.floor(availableTocHeight / lineHeight));
+    const tocPageCount = Math.max(1, Math.ceil(book.chapters.length / tocEntriesPerPage));
+
+    const createTocPage = (): TocPageState => {
+        const page = addContentPage({ role: 'toc' });
+        const headerY = pageHeight - config.margins.top;
+        page.drawText('Table of Contents', {
+            x: originX,
+            y: headerY,
+            font: headingFont,
+            size: config.fonts.heading.size,
+            color: theme.heading,
+        });
+        page.drawRectangle({
+            x: originX,
+            y: headerY - config.fonts.heading.size - 6,
+            width: contentWidth,
+            height: 2,
+            color: theme.accent,
+            opacity: 0.3,
+        });
+        return { page, nextY: headerY - config.fonts.heading.size * 1.8 };
+    };
+
+    for (let i = 0; i < tocPageCount; i++) {
+        tocPages.push(createTocPage());
+    }
+
+    const renderTableOfContents = () => {
+        if (!tocPages.length || !tocEntries.length) return;
+        let pageIndex = 0;
+        let currentPage = tocPages[pageIndex];
+        for (const entry of tocEntries) {
+            if (!currentPage) break;
+            if (currentPage.nextY < config.margins.bottom + lineHeight) {
+                pageIndex++;
+                currentPage = tocPages[pageIndex];
+                if (!currentPage) break;
+            }
+            currentPage.page.drawText(entry.title, {
+                x: originX,
+                y: currentPage.nextY,
+                font: bodyFont,
+                size: config.fonts.body.size,
+                color: theme.body,
+            });
+            const pageNumberText = entry.pageNumber.toString();
+            const numberWidth = bodyFont.widthOfTextAtSize(pageNumberText, config.fonts.body.size);
+            currentPage.page.drawText(pageNumberText, {
+                x: pageWidth - config.margins.right - numberWidth,
+                y: currentPage.nextY,
+                font: bodyFont,
+                size: config.fonts.body.size,
+                color: theme.body,
+            });
+            currentPage.nextY -= lineHeight;
+        }
+    };
+
     // --- Optional Image Gallery ---
     if (galleryImages.length > 0) {
-        let galleryPage = pdfDoc.addPage(pageDimensions);
-        drawPageBackground(galleryPage, pageWidth, pageHeight, theme.pageBackground);
+        let galleryPage = addContentPage({ role: 'gallery' });
         let galleryY = pageHeight - config.margins.top;
         galleryPage.drawText('Contributor Gallery', {
-            x: config.margins.left,
+            x: originX,
             y: galleryY,
             font: headingFont,
             size: config.fonts.heading.size,
@@ -349,7 +526,7 @@ export async function buildBookPdf(book: GeneratedBook, userConfig: Partial<PdfC
         galleryY -= config.fonts.heading.size * 1.4;
 
         const columns = 2;
-        const gutter = 16;
+        const gutter = 18;
         const cardWidth = (contentWidth - gutter) / columns;
         let rowMaxHeight = 0;
         for (const [index, asset] of galleryImages.entries()) {
@@ -358,187 +535,145 @@ export async function buildBookPdf(book: GeneratedBook, userConfig: Partial<PdfC
             const scale = Math.min(1, cardWidth / embeddedImage.width, maxImageHeight / embeddedImage.height);
             const drawWidth = embeddedImage.width * scale;
             const drawHeight = embeddedImage.height * scale;
-
             const columnIndex = index % columns;
-            if (columnIndex === 0 && galleryY - drawHeight - 40 < config.margins.bottom) {
-                galleryPage = pdfDoc.addPage(pageDimensions);
-                drawPageBackground(galleryPage, pageWidth, pageHeight, theme.pageBackground);
+            if (columnIndex === 0 && galleryY - drawHeight - 50 < config.margins.bottom) {
+                galleryPage = addContentPage({ role: 'gallery' });
                 galleryY = pageHeight - config.margins.top;
             }
 
-            const originX = config.margins.left + columnIndex * (cardWidth + gutter);
             const originY = galleryY;
-
+            const originColumnX = originX + columnIndex * (cardWidth + gutter);
             galleryPage.drawRectangle({
-                x: originX,
-                y: originY - drawHeight - 8,
+                x: originColumnX,
+                y: originY - drawHeight - 12,
                 width: cardWidth,
-                height: drawHeight + 36,
+                height: drawHeight + 42,
                 color: theme.accentSoft,
                 opacity: 0.2,
             });
-
             galleryPage.drawImage(embeddedImage, {
-                x: originX + (cardWidth - drawWidth) / 2,
-                y: originY - drawHeight - 4,
+                x: originColumnX + (cardWidth - drawWidth) / 2,
+                y: originY - drawHeight - 8,
                 width: drawWidth,
                 height: drawHeight,
             });
-
             const caption = asset.caption?.trim() || asset.name || 'Uploaded image';
             galleryPage.drawText(caption, {
-                x: originX + 8,
-                y: originY - drawHeight - 24,
-                font: italicBodyFont,
+                x: originColumnX + 8,
+                y: originY - drawHeight - 28,
+                font: bodyItalicFont,
                 size: 10,
                 color: theme.caption,
             });
 
             rowMaxHeight = Math.max(rowMaxHeight, drawHeight);
             if (columnIndex === columns - 1 || index === galleryImages.length - 1) {
-                galleryY -= rowMaxHeight + 70;
+                galleryY -= rowMaxHeight + 80;
                 rowMaxHeight = 0;
             }
         }
     }
 
     // --- Chapter Rendering Helpers ---
-    const createChapterPage = (chapterIndex: number, chapterTitle: string, isFirstPage: boolean): PDFPage => {
-        const page = pdfDoc.addPage(pageDimensions);
-        drawPageBackground(page, pageWidth, pageHeight, theme.pageBackground);
-
-        page.drawRectangle({
-            x: 0,
-            y: pageHeight - 32,
-            width: pageWidth,
-            height: 32,
-            color: theme.accentSoft,
-            opacity: 0.3,
-        });
-
-        page.drawText(`Chapter ${chapterIndex}`, {
-            x: config.margins.left,
-            y: pageHeight - 22,
-            font: headingFont,
-            size: 10,
-            color: theme.caption,
-        });
-
-        if (isFirstPage) {
-            const headingSize = config.fonts.heading.size;
-            page.drawText(chapterTitle, {
-                x: config.margins.left,
-                y: pageHeight - config.margins.top,
-                font: headingFont,
-                size: headingSize,
-                color: theme.heading,
-            });
-            page.drawRectangle({
-                x: config.margins.left,
-                y: pageHeight - config.margins.top - headingSize - 8,
-                width: 48,
-                height: 4,
-                color: theme.accent,
-            });
-        }
-
-        return page;
-    };
-
-    const drawParagraph = (page: PDFPage, text: string, dropcap: boolean, state: { y: number }) => {
-        const dropCapSize = config.fonts.body.size * 3.8;
-        const dropCapIndent = dropCapSize * 0.35 + 8;
-        if (dropcap && text.length > 2) {
-            const firstChar = text[0];
-            const remainder = text.slice(1).trimStart();
-            page.drawText(firstChar.toUpperCase(), {
-                x: config.margins.left,
-                y: state.y + dropCapSize - config.fonts.body.size,
-                font: headingFont,
-                size: dropCapSize,
-                color: theme.accent,
-            });
-            const lines = wrapText(remainder, bodyFont, config.fonts.body.size, contentWidth - dropCapIndent);
-            let localY = state.y;
-            for (const line of lines) {
-                if (localY < config.margins.bottom + lineHeight) {
-                    break;
-                }
-                page.drawText(line, {
-                    x: config.margins.left + dropCapIndent,
-                    y: localY,
-                    font: bodyFont,
-                    size: config.fonts.body.size,
-                    color: theme.body,
-                });
-                localY -= lineHeight;
-            }
-            state.y = localY - paragraphSpacing;
-            return;
-        }
-
-        const lines = wrapText(text, bodyFont, config.fonts.body.size, contentWidth);
-        for (const line of lines) {
-            if (state.y < config.margins.bottom + lineHeight) {
-                break;
-            }
-            page.drawText(line, {
-                x: config.margins.left,
-                y: state.y,
-                font: bodyFont,
-                size: config.fonts.body.size,
-                color: theme.body,
-            });
-            state.y -= lineHeight;
-        }
-        state.y -= paragraphSpacing;
-    };
-
-    const ensureSpace = (state: { page: PDFPage; y: number }, chapterIndex: number, chapterTitle: string, needed: number) => {
-        if (state.y - needed < config.margins.bottom) {
-            state.page = createChapterPage(chapterIndex, chapterTitle, false);
-            state.y = pageHeight - config.margins.top - 20;
-        }
-    };
+    const textFonts = { regular: bodyFont, bold: bodyBoldFont, italic: bodyItalicFont };
 
     const drawChapterImage = async (
         asset: UserImageAsset,
         state: { page: PDFPage; y: number },
-        chapterIndex: number,
-        chapterTitle: string
+        ensureSpaceFn: (amount: number) => void
     ) => {
         const embedded = await getEmbeddedImageForAsset(asset);
         const maxHeight = pageHeight * 0.35;
         const scale = Math.min(1, contentWidth / embedded.width, maxHeight / embedded.height);
         const drawWidth = embedded.width * scale;
         const drawHeight = embedded.height * scale;
-        ensureSpace(state, chapterIndex, chapterTitle, drawHeight + 40);
+        ensureSpaceFn(drawHeight + 40);
         state.page.drawImage(embedded, {
-            x: config.margins.left + (contentWidth - drawWidth) / 2,
+            x: originX + (contentWidth - drawWidth) / 2,
             y: state.y - drawHeight,
             width: drawWidth,
             height: drawHeight,
         });
+        state.y -= drawHeight + 16;
         if (asset.caption?.trim()) {
             state.page.drawText(asset.caption.trim(), {
-                x: config.margins.left,
-                y: state.y - drawHeight - 16,
-                font: italicBodyFont,
+                x: originX,
+                y: state.y,
+                font: bodyItalicFont,
                 size: 10,
                 color: theme.caption,
             });
+            state.y -= lineHeight;
         }
-        state.y -= drawHeight + 32;
+        state.y -= paragraphSpacing / 2;
+    };
+
+    const chapterPageFactory = (chapterIndex: number, chapterTitle: string, isFirstPage: boolean) => {
+        const page = addContentPage({ role: 'chapter', chapterTitle });
+        page.drawRectangle({
+            x: 0,
+            y: pageHeight - 32,
+            width: pageWidth,
+            height: 32,
+            color: theme.accentSoft,
+            opacity: 0.25,
+        });
+        const chapterLabel = `Chapter ${chapterIndex}`.toUpperCase();
+        page.drawText(chapterLabel, {
+            x: originX,
+            y: pageHeight - 22,
+            font: headingFont,
+            size: 12,
+            color: theme.caption,
+        });
+
+        let bodyStartY = pageHeight - config.margins.top - 24;
+        if (isFirstPage) {
+            const chapterHeadingSize = config.fonts.heading.size * 1.05;
+            const titleLines = wrapText(chapterTitle, headingFont, chapterHeadingSize, contentWidth * 0.9);
+            let titleY = pageHeight - config.margins.top - 32;
+            for (const line of titleLines) {
+                const textWidth = headingFont.widthOfTextAtSize(line, chapterHeadingSize);
+                page.drawText(line, {
+                    x: originX + (contentWidth - textWidth) / 2,
+                    y: titleY,
+                    font: headingFont,
+                    size: chapterHeadingSize,
+                    color: theme.heading,
+                });
+                titleY -= chapterHeadingSize * 1.2;
+            }
+            bodyStartY = titleY - 28;
+            page.drawRectangle({
+                x: originX + (contentWidth / 2) - 30,
+                y: bodyStartY + 12,
+                width: 60,
+                height: 3,
+                color: theme.accent,
+            });
+            bodyStartY -= 24;
+        }
+        return { page, bodyStartY };
     };
 
     for (const chapter of book.chapters) {
-        if (!chapter.text || !chapter.text.trim()) continue;
-        const blocks = parseChapterText(chapter.text);
-        if (!blocks.length && !chapterImageMap.has(chapter.index)) continue;
+        if (!chapter.text?.trim() && !chapterImageMap.has(chapter.index)) continue;
+        const parsedBlocks = stripLeadingChapterHeading(parseMarkdownToBlocks(chapter.text || ''), chapter.title);
+        if (!parsedBlocks.length && !chapterImageMap.has(chapter.index)) continue;
 
-        const state = {
-            page: createChapterPage(chapter.index, chapter.title, true),
-            y: pageHeight - config.margins.top - config.fonts.heading.size * 2,
+        const firstPage = chapterPageFactory(chapter.index, chapter.title, true);
+        const state = { page: firstPage.page, y: firstPage.bodyStartY };
+        const tocTitle = `Chapter ${chapter.index}: ${chapter.title}`;
+        const chapterPageNumber = Math.max(1, pageMeta.length - coverPageCount);
+        tocEntries.push({ title: tocTitle, pageNumber: chapterPageNumber });
+
+        const continuationStartY = pageHeight - config.margins.top - 32;
+        const ensureSpace = (needed: number) => {
+            if (state.y - needed < config.margins.bottom) {
+                const nextPage = chapterPageFactory(chapter.index, chapter.title, false);
+                state.page = nextPage.page;
+                state.y = continuationStartY;
+            }
         };
 
         const assignedImages = chapterImageMap.get(chapter.index) ?? [];
@@ -551,131 +686,144 @@ export async function buildBookPdf(book: GeneratedBook, userConfig: Partial<PdfC
         const startImages = assignedImages.filter(asset => resolveAnchor(asset) === 'start');
         const middleImages = assignedImages.filter(asset => resolveAnchor(asset) === 'middle');
         const endImages = assignedImages.filter(asset => resolveAnchor(asset) === 'end');
+
         const drawImages = async (images: UserImageAsset[]) => {
             for (const asset of images) {
-                await drawChapterImage(asset, state, chapter.index, chapter.title);
+                await drawChapterImage(asset, state, ensureSpace);
             }
         };
 
         await drawImages(startImages);
 
-        let dropcapAvailable = enableDropCaps;
-        const totalBlocks = blocks.length;
-        const middleTriggerIndex = Math.max(1, Math.floor(totalBlocks / 2));
-        let middleRendered = false;
+        const totalBlocks = parsedBlocks.length;
+        const middleTrigger = Math.max(1, Math.floor(totalBlocks / 2));
+        let middleInserted = false;
 
         for (let blockIndex = 0; blockIndex < totalBlocks; blockIndex++) {
-            const block = blocks[blockIndex];
-            if (state.y < config.margins.bottom + lineHeight * 2) {
-                state.page = createChapterPage(chapter.index, chapter.title, false);
-                state.y = pageHeight - config.margins.top;
-            }
-
+            const block = parsedBlocks[blockIndex];
             switch (block.kind) {
-                case 'heading':
-                case 'subheading': {
-                    const sizeMultiplier = block.kind === 'heading' ? 1.15 : 1.05;
-                    const headingSize = config.fonts.heading.size * sizeMultiplier;
-                    ensureSpace(state, chapter.index, chapter.title, headingSize * 1.5);
-                    state.page.drawText(block.content, {
-                        x: config.margins.left,
+                case 'heading': {
+                    const headingSize = block.level <= 2 ? config.fonts.heading.size : config.fonts.heading.size * 0.9;
+                    ensureSpace(headingSize * 2);
+                    state.page.drawText(block.text, {
+                        x: originX,
                         y: state.y,
                         font: headingFont,
                         size: headingSize,
                         color: theme.heading,
                     });
-                    state.y -= headingSize * 1.2;
-                    dropcapAvailable = false;
+                    state.y -= headingSize * 1.3;
+                    state.y -= paragraphSpacing / 2;
                     break;
                 }
-                case 'bullet': {
-                    ensureSpace(state, chapter.index, chapter.title, lineHeight * 1.4);
-                    state.page.drawText('•', {
-                        x: config.margins.left,
-                        y: state.y,
-                        font: headingFont,
-                        size: config.fonts.body.size + 2,
-                        color: theme.accent,
-                    });
-                    const lines = wrapText(block.content, bodyFont, config.fonts.body.size, contentWidth - 18);
-                    for (const line of lines) {
-                        state.page.drawText(line, {
-                            x: config.margins.left + 18,
-                            y: state.y,
-                            font: bodyFont,
-                            size: config.fonts.body.size,
-                            color: theme.body,
-                        });
-                        state.y -= lineHeight;
-                        ensureSpace(state, chapter.index, chapter.title, lineHeight);
+                case 'list': {
+                    for (const item of block.items) {
+                        let bulletDrawn = false;
+                        drawRichParagraph(
+                            item,
+                            textFonts,
+                            state,
+                            ensureSpace,
+                            originX,
+                            contentWidth,
+                            config.fonts.body.size,
+                            lineHeight,
+                            paragraphSpacing,
+                            theme.body,
+                            {
+                                indent: 18,
+                                spacingBottom: paragraphSpacing / 2,
+                                beforeFirstLine: (lineY) => {
+                                    if (bulletDrawn) return;
+                                    bulletDrawn = true;
+                                    state.page.drawText('•', {
+                                        x: originX,
+                                        y: lineY,
+                                        font: headingFont,
+                                        size: config.fonts.body.size + 2,
+                                        color: theme.heading,
+                                    });
+                                },
+                            }
+                        );
                     }
-                    state.y -= paragraphSpacing / 2;
-                    dropcapAvailable = false;
                     break;
                 }
                 case 'quote': {
-                    const quoteHeight = lineHeight * 2;
-                    ensureSpace(state, chapter.index, chapter.title, quoteHeight + 10);
-                    state.page.drawRectangle({
-                        x: config.margins.left,
-                        y: state.y - quoteHeight,
-                        width: contentWidth,
-                        height: quoteHeight + 12,
-                        color: theme.accentSoft,
-                        opacity: 0.3,
-                    });
-                    const quoteLines = wrapText(block.content, italicBodyFont, config.fonts.body.size, contentWidth - 20);
-                    let localY = state.y - 8;
-                    for (const line of quoteLines) {
-                        state.page.drawText(line, {
-                            x: config.margins.left + 12,
-                            y: localY,
-                            font: italicBodyFont,
-                            size: config.fonts.body.size,
-                            color: theme.caption,
-                        });
-                        localY -= lineHeight;
-                    }
-                    state.y = localY - paragraphSpacing;
-                    dropcapAvailable = false;
+                    drawRichParagraph(
+                        block.spans,
+                        textFonts,
+                        state,
+                        ensureSpace,
+                        originX + 10,
+                        contentWidth - 20,
+                        config.fonts.body.size,
+                        lineHeight,
+                        paragraphSpacing,
+                        theme.caption,
+                        { indent: 0, spacingBottom: paragraphSpacing / 2 }
+                    );
                     break;
                 }
                 case 'paragraph':
                 default: {
-                    ensureSpace(state, chapter.index, chapter.title, lineHeight * 3);
-                    drawParagraph(state.page, block.content, dropcapAvailable, state);
-                    dropcapAvailable = false;
+                    drawRichParagraph(
+                        block.kind === 'paragraph' ? block.spans : [{ text: '' }],
+                        textFonts,
+                        state,
+                        ensureSpace,
+                        originX,
+                        contentWidth,
+                        config.fonts.body.size,
+                        lineHeight,
+                        paragraphSpacing,
+                        theme.body
+                    );
                 }
             }
 
-            if (!middleRendered && blockIndex + 1 >= middleTriggerIndex) {
+            if (!middleInserted && blockIndex + 1 >= middleTrigger) {
                 await drawImages(middleImages);
-                middleRendered = true;
+                middleInserted = true;
             }
         }
 
-        if (!middleRendered) {
+        if (!middleInserted) {
             await drawImages(middleImages);
         }
         await drawImages(endImages);
     }
 
-    // --- Page Numbering ---
+    renderTableOfContents();
+
     if (config.pageNumbering) {
-        const pages = pdfDoc.getPages();
-        const pageNumberFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
-        const pageNumberFontSize = 9;
-        for (let i = 1; i < pages.length; i++) {
-            const page = pages[i];
-            const pageNumberText = `${i}`;
-            page.drawText(pageNumberText, {
-                x: page.getWidth() - config.margins.right,
-                y: config.margins.bottom / 2,
-                font: pageNumberFont,
-                size: pageNumberFontSize,
-                color: theme.subtle,
+        const footerFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
+        const footerSize = 9;
+        let numberedPageCounter = 0;
+        pageMeta.forEach((meta) => {
+            if (meta.role === 'cover') return;
+            numberedPageCounter += 1;
+            const footerY = config.margins.bottom / 2;
+            const footerLabel = meta.chapterTitle ? `${book.config.title} • ${meta.chapterTitle}` : book.config.title;
+            const labelWidth = footerFont.widthOfTextAtSize(footerLabel, footerSize);
+            const labelX = Math.max(originX, (pageWidth - labelWidth) / 2);
+            meta.page.drawText(footerLabel, {
+                x: labelX,
+                y: footerY,
+                font: footerFont,
+                size: footerSize,
+                color: theme.caption,
             });
-        }
+            const numberText = numberedPageCounter.toString();
+            const numberWidth = footerFont.widthOfTextAtSize(numberText, footerSize);
+            meta.page.drawText(numberText, {
+                x: pageWidth - config.margins.right - numberWidth,
+                y: footerY,
+                font: footerFont,
+                size: footerSize,
+                color: theme.caption,
+            });
+        });
     }
 
     return pdfDoc.save();

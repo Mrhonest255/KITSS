@@ -74,7 +74,7 @@ const PdfDownloadButton: React.FC<PdfDownloadButtonProps> = ({
                 type="button"
                 onClick={() => !isDisabled && setIsDesignerOpen(true)}
                 disabled={isDisabled}
-                className="flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-green-500 px-4 py-2 text-sm font-semibold text-white hover:from-emerald-400 hover:to-green-400 disabled:cursor-not-allowed disabled:from-slate-700 disabled:to-slate-600"
+                className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-green-500 px-4 py-2 text-sm font-semibold text-white hover:from-emerald-400 hover:to-green-400 disabled:cursor-not-allowed disabled:from-slate-700 disabled:to-slate-600 sm:w-auto"
             >
                 {isBuilding ? <DownloadIcon className="h-5 w-5 animate-pulse" /> : <SettingsIcon className="h-5 w-5" />}
                 {isBuilding ? 'Building PDF…' : 'Customize & Download'}

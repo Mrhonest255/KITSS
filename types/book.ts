@@ -111,3 +111,7 @@ export interface PdfBuildOptions {
   images?: UserImageAsset[];
   enableDropCaps?: boolean;
 }
+
+export interface DocxBuildOptions {
+  images?: UserImageAsset[];
+}

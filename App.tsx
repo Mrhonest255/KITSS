@@ -1,12 +1,13 @@
 
 import React, { useState } from 'react';
-import { BookConfig, ChapterContent, UserImageAsset, ImagePlacement } from './types/book';
+                                                                                                                                                                                                                                                                                                                                                                                                    import { BookConfig, ChapterContent, UserImageAsset, ImagePlacement } from './types/book';
 import { useBookGeneration } from './hooks/useBookGeneration';
 import BookConfigForm from './components/BookConfigForm';
 import GenerationProgress from './components/GenerationProgress';
 import BookPreview from './components/BookPreview';
 import ChapterPreview from './components/ChapterPreview';
 import PdfDownloadButton from './components/PdfDownloadButton';
+import DocxDownloadButton from './components/DocxDownloadButton';
 import Layout from './components/Layout';
 import { LogoIcon } from './components/icons/LogoIcon';
 import ApiStatusIndicator from './components/ApiStatusIndicator';
@@ -259,6 +260,39 @@ const App: React.FC = () => {
                                     notice={quotaNotice}
                                 />
                                 <BookConfigForm onGenerate={handleGenerate} isGenerating={isGenerating} quotaRemaining={quota.remaining} canGenerate={quota.canGenerate} />
+                                {state.book && (
+                                    <div className="lg:hidden rounded-3xl border border-white/10 bg-white/10 p-4 text-sm text-slate-200 shadow-inner shadow-black/40">
+                                        <div className="flex flex-col gap-2">
+                                            <div>
+                                                <p className="text-xs uppercase tracking-[0.4em] text-slate-400">PDF export</p>
+                                                <p className="text-base font-semibold text-white">Customize before you download</p>
+                                                <p className="text-xs text-slate-400">Tap below to open the studio without switching to desktop mode.</p>
+                                            </div>
+                                            <div className="flex flex-col gap-2 sm:flex-row">
+                                                <PdfDownloadButton
+                                                    book={state.book}
+                                                    images={userImages}
+                                                    isReady={state.step === 'done'}
+                                                    chapters={state.book.chapters}
+                                                    onUpdateImagePlacement={handleImagePlacementChange}
+                                                    onReorderImage={handleReorderImage}
+                                                    onToggleInclude={handleToggleImage}
+                                                    onRemoveImage={handleRemoveImage}
+                                                />
+                                                <DocxDownloadButton
+                                                    book={state.book}
+                                                    images={userImages}
+                                                    isReady={state.step === 'done'}
+                                                />
+                                            </div>
+                                            <p className="text-center text-xs text-slate-400">
+                                                {activeImages.length > 0
+                                                    ? `${activeImages.length} image${activeImages.length === 1 ? '' : 's'} queued for exports.`
+                                                    : 'No optional images selected yet.'}
+                                            </p>
+                                        </div>
+                                    </div>
+                                )}
                                 <GenerationProgress state={state} />
                                 {isGenerating && (
                                     <CreativeInterlude stepLabel={state.step === 'outline' ? 'we outline' : 'chapters render'} />
@@ -293,21 +327,28 @@ const App: React.FC = () => {
                                                 <p className="text-sm text-slate-300">by BookForge AI</p>
                                             </div>
                                             <div className="flex flex-wrap items-center gap-3">
-                                                <div className="flex flex-col items-center gap-2">
-                                                    <PdfDownloadButton
-                                                        book={state.book}
-                                                        images={userImages}
-                                                        isReady={state.step === 'done'}
-                                                        chapters={state.book.chapters}
-                                                        onUpdateImagePlacement={handleImagePlacementChange}
-                                                        onReorderImage={handleReorderImage}
-                                                        onToggleInclude={handleToggleImage}
-                                                        onRemoveImage={handleRemoveImage}
-                                                    />
+                                                <div className="hidden flex-col items-center gap-2 lg:flex">
+                                                    <div className="flex flex-col gap-2">
+                                                        <PdfDownloadButton
+                                                            book={state.book}
+                                                            images={userImages}
+                                                            isReady={state.step === 'done'}
+                                                            chapters={state.book.chapters}
+                                                            onUpdateImagePlacement={handleImagePlacementChange}
+                                                            onReorderImage={handleReorderImage}
+                                                            onToggleInclude={handleToggleImage}
+                                                            onRemoveImage={handleRemoveImage}
+                                                        />
+                                                        <DocxDownloadButton
+                                                            book={state.book}
+                                                            images={userImages}
+                                                            isReady={state.step === 'done'}
+                                                        />
+                                                    </div>
                                                     <p className="text-center text-xs text-slate-400">
                                                         {activeImages.length > 0
-                                                            ? `${activeImages.length} image${activeImages.length === 1 ? '' : 's'} queued for the PDF gallery.`
-                                                            : 'No images selected for this PDF.'}
+                                                            ? `${activeImages.length} image${activeImages.length === 1 ? '' : 's'} queued for exports.`
+                                                            : 'No images selected for this export.'}
                                                     </p>
                                                 </div>
                                                 <button
